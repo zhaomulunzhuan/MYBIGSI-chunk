@@ -13,10 +13,14 @@ public class Index implements Serializable{
     private static final long serialVersionUID = 1L;
     private static List<BloomFilter> bloomFilterList;
     private static LongBitSet longBitSet;//由于每行转置成一个bitset，即使用List<BitSet>，总是造成堆内存溢出，所以布隆过滤器列表转置为一个位数组
-
     private static List<List<String>> all_results=new ArrayList<>();//按行查询结果
+    private static int chunk_num=8;//子索引数量
 
-    private static long total_query_row_time=0;//按行查询总时间
+    private static long query_col=0;
+
+    public static long getQuery_col(){
+        return query_col;
+    }
 
     //分批构建
     public static void chunk_BuildIndex(int bloomfilter_size, int k, List<String> input_file){//分批构建 为了便于行查询，可以128一批，或者256一批
@@ -24,9 +28,6 @@ public class Index implements Serializable{
         Metadata.set_num_hashs(k);
         int chunkSize=128;//每128个数据集构建一个BIGSI索引
         processChunks(bloomfilter_size, k,input_file,chunkSize);
-
-        //按行查询时间
-        System.out.println("按行查询时间"+total_query_row_time+"ms");
     }
 
     public static void processChunks(int bloomfilter_size, int k,List<String> inputList, int chunkSize) {
@@ -94,87 +95,13 @@ public class Index implements Serializable{
         Metadata.getChunkFileList().put(chunk_index,dataset_index_list);
 
         //=======================================最终获得按列构建的索引
-//        String filename="D:/Code/Idea_Codes/BIGSI_FILE/serializeFIle/Col/"+"SubIndex_"+chunk_index+".ser";//序列化子索引的布隆过滤器列表
-//        Utils.serializeBFlist(bloomFilterList,filename);
-        //=======================================到这是按列操作部分
-
-        //---------------------------------------获得按行构建的索引 将bloomFilterList转置为行存储形式序列化就得到了一个按行存储的子索引
-        String filename="D:/Code/Idea_Codes/BIGSI_FILE/serializeFIle/Row/"+"SubIndex_"+chunk_index+".ser";//序列化子索引的布隆过滤器列表
-        transposeBloomFiltersToLongBitset(bloomFilterList);
+        String filename="D:/Code/Idea_Codes/BIGSI_FILE/serializeFIle/Col/"+"SubIndex_"+chunk_index+".ser";//序列化子索引的布隆过滤器列表
+        Utils.serializeBFlist(bloomFilterList,filename);
 
 
-        long startqueryASrow=System.currentTimeMillis();
-        List<List<String>> sub_results=new ArrayList<>();
-
-        String queryfile="D:\\Code\\Idea_Codes\\BIGSI_FILE\\query.txt";
-        sub_results=chunk_queryFileASRow(chunk_index,queryfile);
-
-        if (chunk_index==1){//第一个子索引结果
-            all_results=sub_results;
-        }else {
-            for (int i = 0; i < all_results.size(); i++) {
-                all_results.get(i).addAll(sub_results.get(i));
-            }
-        }
-
-        //结果写入文件
-        int pointer = 0;
-        String queryresultFile = "D:/Code/Idea_Codes/BIGSI_FILE"+"/"+"query_result(row).txt";//存放查询结果
-        try(
-                BufferedReader reader=new BufferedReader(new FileReader(queryfile));
-                BufferedWriter writer=new BufferedWriter(new FileWriter(queryresultFile))){
-            String line;
-            String sequence="";
-            while ((line=reader.readLine())!=null){
-                if(line.startsWith(">")){
-                    //查询
-                    if (!sequence.isEmpty()){
-                        writer.write(sequence+"\n");
-                        List<String> cur_result=all_results.get(pointer);
-                        if (!cur_result.isEmpty()){//有查询结果
-                            writer.write("查询结果"+"\n");
-                            for (String datasetName : cur_result) {
-                                writer.write(datasetName + "\n");
-                            }
-                        }else{
-                            writer.write("查询结果"+"\n");
-                            writer.write("未查询到包含查询序列的数据集"+"\n");
-                        }
-                        pointer++;
-                        writer.write(line+"\n");
-                    }else {
-                        writer.write(line+"\n");
-                    }
-                    sequence="";
-                }else {
-                    sequence+=line.trim().toUpperCase();
-                }
-            }
-            if(!sequence.isEmpty()){
-                writer.write(sequence + "\n");
-                //查询最后一段序列
-                List<String> cur_result=all_results.get(pointer);
-                if (!cur_result.isEmpty()){//有查询结果
-                    writer.write("查询结果"+"\n");
-                    for (String datasetName : cur_result) {
-                        writer.write(datasetName + "\n");
-                    }
-                }else{
-                    writer.write("查询结果"+"\n");
-                    writer.write("未查询到包含查询序列的数据集"+"\n");
-                }
-            }
-        }catch (IOException e){
-            System.err.println(e);
-        }
-
-        long endqueryASrow=System.currentTimeMillis();
-        total_query_row_time+=(endqueryASrow-startqueryASrow);
-
-        //---------------------------------------到这里都属于按行操作部分
     }
 
-
+    //按列查询
     public static void chunk_queryAsCol(String queryfile){//应该是加载一次子索引对查询文件执行一次查询
         long startqueryAScol=System.currentTimeMillis();
         long total_load_time=0;
@@ -204,6 +131,8 @@ public class Index implements Serializable{
                             long endload=System.currentTimeMillis();
                             long loadTime=endload-startload;//加载当前子索引耗费的时间
                             total_load_time+=loadTime;
+
+                            long startquery=System.currentTimeMillis();
                             //对当前子索引执行文件查询
                             sub_results=chunk_queryFileAScol(index,queryfile);
                             if (index==1){//第一个子索引结果
@@ -213,6 +142,8 @@ public class Index implements Serializable{
                                     all_results.get(i).addAll(sub_results.get(i));
                                 }
                             }
+                            long endquery=System.currentTimeMillis();
+                            query_col+=(endquery-startquery);
                         }
                     }
                 }
@@ -343,7 +274,98 @@ public class Index implements Serializable{
     }
 
 
-    //分批 按行 查询
+    //分批 按行 查询  这里的按行查询是将布隆过滤器列表转换为一个LongBitset，而QueryAsrow里面是将其转换为long数组
+    //按行查询
+    public static void chunk_queryAsRow(String queryfile){
+        long startqueryASrow=System.currentTimeMillis();
+        long total_load_time=0;
+        List<List<String>> all_results=new ArrayList<>();
+        for(int chunk_index=1;chunk_index<=chunk_num;chunk_index++){
+
+            long startload=System.currentTimeMillis();
+
+            //加载当前子索引的布隆过滤器列表
+            String filename="D:/Code/Idea_Codes/BIGSI_FILE/serializeFIle/Col/"+"SubIndex_"+chunk_index+".ser";//序列化子索引的布隆过滤器列表
+            bloomFilterList=Utils.deserializeBFlist(filename);
+            transposeBloomFiltersToLongBitset(bloomFilterList);
+            bloomFilterList=null;
+            // 提示垃圾回收器进行垃圾回收
+            System.gc();
+
+            long endload=System.currentTimeMillis();
+            long loadTime=endload-startload;//加载当前子索引耗费的时间
+            total_load_time+=loadTime;
+
+
+            List<List<String>> sub_results=new ArrayList<>();
+            sub_results=Index.chunk_queryFileASRow(chunk_index,queryfile);
+
+            if (chunk_index==1){//第一个子索引结果
+                all_results=sub_results;
+            }else {
+                for (int i = 0; i < all_results.size(); i++) {
+                    all_results.get(i).addAll(sub_results.get(i));
+                }
+            }
+        }
+        //结果写入文件
+        int pointer = 0;
+        String queryresultFile = "D:/Code/Idea_Codes/BIGSI_FILE"+"/"+"query_result(row_LongBitset).txt";//存放查询结果
+        try(
+                BufferedReader reader=new BufferedReader(new FileReader(queryfile));
+                BufferedWriter writer=new BufferedWriter(new FileWriter(queryresultFile))){
+            String line;
+            String sequence="";
+            while ((line=reader.readLine())!=null){
+                if(line.startsWith(">")){
+                    //查询
+                    if (!sequence.isEmpty()){
+                        writer.write(sequence+"\n");
+                        List<String> cur_result=all_results.get(pointer);
+                        if (!cur_result.isEmpty()){//有查询结果
+                            writer.write("查询结果"+"\n");
+                            for (String datasetName : cur_result) {
+                                writer.write(datasetName + "\n");
+                            }
+                        }else{
+                            writer.write("查询结果"+"\n");
+                            writer.write("未查询到包含查询序列的数据集"+"\n");
+                        }
+                        pointer++;
+                        writer.write(line+"\n");
+                    }else {
+                        writer.write(line+"\n");
+                    }
+                    sequence="";
+                }else {
+                    sequence+=line.trim().toUpperCase();
+                }
+            }
+            if(!sequence.isEmpty()){
+                writer.write(sequence + "\n");
+                //查询最后一段序列
+                List<String> cur_result=all_results.get(pointer);
+                if (!cur_result.isEmpty()){//有查询结果
+                    writer.write("查询结果"+"\n");
+                    for (String datasetName : cur_result) {
+                        writer.write(datasetName + "\n");
+                    }
+                }else{
+                    writer.write("查询结果"+"\n");
+                    writer.write("未查询到包含查询序列的数据集"+"\n");
+                }
+            }
+        }catch (IOException e){
+            System.err.println(e);
+        }
+
+        long endqueryASrow=System.currentTimeMillis();
+        long queryTimeASrow=endqueryASrow-startqueryASrow;
+        System.out.println("按行查询总时间(转置为LongBitset):"+queryTimeASrow+"ms");
+        System.out.println("加载子索引时间："+total_load_time+"ms");
+        System.out.println("去除加载子索引后的查询时间:"+(queryTimeASrow-total_load_time)+"ms");
+    }
+
     public static void transposeBloomFiltersToLongBitset(List<BloomFilter> bloomFilters) {//如果一个布隆过滤器是一列，这里就是按列存储转换为按行存储
         int numCols=bloomFilters.size();
         int numRows=Metadata.getBloomfilterSize();
@@ -363,6 +385,7 @@ public class Index implements Serializable{
         List<String> result_sampels=new ArrayList<>();
         List<Integer> dataset_index_list=Metadata.getChunkFileList().get(chunk_index);
         int num_cols=dataset_index_list.size();
+
 
         BitSet result=new BitSet(num_cols);
         result.set(0,num_cols);//都设置为1
@@ -384,6 +407,8 @@ public class Index implements Serializable{
                 result_sampels.add(Metadata.getSampleByIndex(dataset_index));
             }
         }
+
+
 
         return result_sampels;
     }
@@ -409,7 +434,6 @@ public class Index implements Serializable{
         }
 
     }
-
     public static List<List<String>> chunk_queryFileASRow(int chunk_index, String filePath){//一个文件中有多个查询长序列，查询每一个并把查询结果写入输出文件
         List<List<String>> sub_results=new ArrayList<>();
         try(BufferedReader reader=new BufferedReader(new FileReader(filePath))){

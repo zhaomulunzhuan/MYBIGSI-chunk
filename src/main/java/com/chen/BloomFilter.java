@@ -55,12 +55,17 @@ public class BloomFilter implements Serializable {
     }
 
     public boolean test(int[] a) {//查询元素，按列（即按布隆过滤器）查询时使用
+//        for (int idx : a) {
+//            if (!bitSet.get(idx)) {
+//                return false;
+//            }
+//        }
+//        return true;
+        int result = -1; // 初始值设置为全部为1的二进制串，即所有位都为真
         for (int idx : a) {
-            if (!bitSet.get(idx)) {
-                return false;
-            }
+            result &= bitSet.get(idx) ? 1 : 0; // 对所有位进行按位与操作
         }
-        return true;
+        return result == 1; // 如果所有位都为真，则返回真
     }
 
     public void update(List<String> elements) {

@@ -48,6 +48,13 @@ public class Utils {
         return keys;
     }
 
+    public static void serializeBFlist(List<BloomFilter> bloomFilterList, String filename) {
+        try (ObjectOutputStream oos = new ObjectOutputStream(new FileOutputStream(filename))) {
+            oos.writeObject(bloomFilterList);
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+    }
 
     public static List<BloomFilter> deserializeBFlist(String filename) {
         List<BloomFilter> list = new ArrayList<>();
