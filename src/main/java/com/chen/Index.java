@@ -14,10 +14,14 @@ public class Index implements Serializable{
     private static List<BloomFilter> bloomFilterList;
     private static LongBitSet longBitSet;//由于每行转置成一个bitset，即使用List<BitSet>，总是造成堆内存溢出，所以布隆过滤器列表转置为一个位数组
     private static List<List<String>> all_results=new ArrayList<>();//按行查询结果
-    private static int chunk_num=8;//子索引数量
-
+    private static int chunk_num=16;//子索引数量
     private static long query_col=0;
 
+    private static long query_time_bitset=0;//按行查询，列转行时使用bitset
+
+    public static long getQuery_time_bitset() {
+        return query_time_bitset;
+    }
     public static long getQuery_col(){
         return query_col;
     }
@@ -279,6 +283,7 @@ public class Index implements Serializable{
     public static void chunk_queryAsRow(String queryfile){
         long startqueryASrow=System.currentTimeMillis();
         long total_load_time=0;
+        long total_transpose_time=0;
         List<List<String>> all_results=new ArrayList<>();
         for(int chunk_index=1;chunk_index<=chunk_num;chunk_index++){
 
@@ -287,7 +292,11 @@ public class Index implements Serializable{
             //加载当前子索引的布隆过滤器列表
             String filename="D:/Code/Idea_Codes/BIGSI_FILE/serializeFIle/Col/"+"SubIndex_"+chunk_index+".ser";//序列化子索引的布隆过滤器列表
             bloomFilterList=Utils.deserializeBFlist(filename);
+            long start_transpose=System.currentTimeMillis();
             transposeBloomFiltersToLongBitset(bloomFilterList);
+            long end_transpose=System.currentTimeMillis();
+            long transposetime=(end_transpose-start_transpose);
+            total_transpose_time+=transposetime;
             bloomFilterList=null;
             // 提示垃圾回收器进行垃圾回收
             System.gc();
@@ -308,6 +317,15 @@ public class Index implements Serializable{
                 }
             }
         }
+
+
+        long endqueryASrow=System.currentTimeMillis();
+        long queryTimeASrow=endqueryASrow-startqueryASrow;
+        System.out.println("按行查询总时间(转置为LongBitset):"+queryTimeASrow+"ms");
+        System.out.println("加载子索引+转置时间："+total_load_time+"ms");
+        System.out.println("转置时间："+total_transpose_time+"ms");
+        System.out.println("去除加载子索引和转置后的查询时间:"+(queryTimeASrow-total_load_time)+"ms");
+
         //结果写入文件
         int pointer = 0;
         String queryresultFile = "D:/Code/Idea_Codes/BIGSI_FILE"+"/"+"query_result(row_LongBitset).txt";//存放查询结果
@@ -359,11 +377,6 @@ public class Index implements Serializable{
             System.err.println(e);
         }
 
-        long endqueryASrow=System.currentTimeMillis();
-        long queryTimeASrow=endqueryASrow-startqueryASrow;
-        System.out.println("按行查询总时间(转置为LongBitset):"+queryTimeASrow+"ms");
-        System.out.println("加载子索引时间："+total_load_time+"ms");
-        System.out.println("去除加载子索引后的查询时间:"+(queryTimeASrow-total_load_time)+"ms");
     }
 
     public static void transposeBloomFiltersToLongBitset(List<BloomFilter> bloomFilters) {//如果一个布隆过滤器是一列，这里就是按列存储转换为按行存储
@@ -413,6 +426,8 @@ public class Index implements Serializable{
         return result_sampels;
     }
     public static List<String> chunk_querySequenceASRow(int chunk_index, String sequence) throws IOException {//查找长序列，每个kmer都存在才报告序列存在
+        long startquery=System.currentTimeMillis();
+
         int kmersize=31;//根据数据集kmer长度简单写死
         List<String> kmerList=new ArrayList<>();
         // 切割sequence并将长度为kmersize的子字符串加入kmerList
@@ -425,6 +440,9 @@ public class Index implements Serializable{
         for(String kmer:kmerList){
             sub_result.retainAll(chunk_querykmerASRow(chunk_index,kmer));
         }
+
+        long endquery=System.currentTimeMillis();
+        query_time_bitset+=(endquery-startquery);
 
         // 将查询结果写入到结果文件
         if (!sub_result.isEmpty()){

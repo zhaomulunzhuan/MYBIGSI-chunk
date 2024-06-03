@@ -5,14 +5,20 @@ import java.util.ArrayList;
 import java.util.BitSet;
 import java.util.List;
 
-public class QueryAsrow {
-    public static int chunk_num=8;//子索引数量，即文件中为子索引1到子索引8
+public class QueryAsrow {//转换为long数组对应的查询
+    public static int chunk_num=16;//子索引数量，即文件中为子索引1到子索引8
     private static List<BloomFilter> bloomFilterList;
     private static long[] storage_row;//转置后的按行存储
+    private static long query_time_longarray=0;//按行查询，列转行时使用longarray
+
+    public static long getQuery_time_longarray() {
+        return query_time_longarray;
+    }
 
     public static void Query(){
         long startqueryASrow=System.currentTimeMillis();
         long total_load_time=0;
+        long total_transpose_time=0;
         List<List<String>> all_results=new ArrayList<>();
         String queryfile="D:\\Code\\Idea_Codes\\BIGSI_FILE\\query.txt";
         for(int chunk_index=1;chunk_index<=chunk_num;chunk_index++){
@@ -22,7 +28,11 @@ public class QueryAsrow {
             //加载当前子索引的布隆过滤器列表
             String filename="D:/Code/Idea_Codes/BIGSI_FILE/serializeFIle/Col/"+"SubIndex_"+chunk_index+".ser";//序列化子索引的布隆过滤器列表
             bloomFilterList=Utils.deserializeBFlist(filename);
+            long start_transpose=System.currentTimeMillis();
             transposeBloomFiltersToLongArray(bloomFilterList);
+            long end_transpose=System.currentTimeMillis();
+            long transposetime=(end_transpose-start_transpose);
+            total_transpose_time+=transposetime;
             bloomFilterList=null;
             // 提示垃圾回收器进行垃圾回收
             System.gc();
@@ -43,6 +53,13 @@ public class QueryAsrow {
             }
 
         }
+
+        long endqueryASrow=System.currentTimeMillis();
+        long queryTimeASrow=endqueryASrow-startqueryASrow;
+        System.out.println("按行查询总时间(转置为long数组):"+queryTimeASrow+"ms");
+        System.out.println("加载子索引+转置时间："+total_load_time+"ms");
+        System.out.println("转置时间："+total_transpose_time+"ms");
+        System.out.println("去除加载子索引和转置后的查询时间:"+(queryTimeASrow-total_load_time)+"ms");
 
         //结果写入文件
         int pointer = 0;
@@ -95,11 +112,6 @@ public class QueryAsrow {
             System.err.println(e);
         }
 
-        long endqueryASrow=System.currentTimeMillis();
-        long queryTimeASrow=endqueryASrow-startqueryASrow;
-        System.out.println("按行查询总时间(转置为long数组):"+queryTimeASrow+"ms");
-        System.out.println("加载子索引时间："+total_load_time+"ms");
-        System.out.println("去除加载子索引后的查询时间:"+(queryTimeASrow-total_load_time)+"ms");
     }
 
     public static void transposeBloomFiltersToLongArray(List<BloomFilter> bloomFilters) {
@@ -126,13 +138,65 @@ public class QueryAsrow {
 
     }
 
+    public static List<List<String>> chunk_queryFileASRow(int chunk_index, String filePath){//一个文件中有多个查询长序列，查询每一个并把查询结果写入输出文件
+        List<List<String>> sub_results=new ArrayList<>();
+        try(BufferedReader reader=new BufferedReader(new FileReader(filePath))){
+            String line;
+            String sequence="";
+            while ((line=reader.readLine())!=null){
+                if(line.startsWith(">")){
+                    //查询
+                    if (!sequence.isEmpty()){
+                        sub_results.add(chunk_querySequenceASRow(chunk_index,sequence));
+                    }
+                    sequence="";
+                }else {
+                    sequence+=line.trim().toUpperCase();
+                }
+            }
+            if(!sequence.isEmpty()){
+                //查询最后一段序列
+                sub_results.add(chunk_querySequenceASRow(chunk_index,sequence));
+            }
+        }catch (IOException e){
+            System.err.println(e);
+        }
+//        System.out.println("子索引"+chunk_index+"结果："+sub_results);
+        return sub_results;
+    }
+
+    public static List<String> chunk_querySequenceASRow(int chunk_index, String sequence) throws IOException {//查找长序列，每个kmer都存在才报告序列存在
+        long startquery=System.currentTimeMillis();
+
+        int kmersize=31;//根据数据集kmer长度简单写死
+        List<String> kmerList=new ArrayList<>();
+        // 切割sequence并将长度为kmersize的子字符串加入kmerList
+        for (int i = 0; i <= sequence.length() - kmersize; i++) {
+            String kmer = sequence.substring(i, i + kmersize);
+            kmerList.add(kmer);
+        }
+
+        List<String> sub_result=new ArrayList<>(chunk_querykmerASRow(chunk_index,kmerList.get(0)));
+        for(String kmer:kmerList){
+            sub_result.retainAll(chunk_querykmerASRow(chunk_index,kmer));
+        }
+
+        long endquery=System.currentTimeMillis();
+        query_time_longarray+=(endquery-startquery);
+
+        if (!sub_result.isEmpty()){
+            return sub_result;
+        }else {
+            return  new ArrayList<>();
+        }
+
+    }
 
     public static List<String> chunk_querykmerASRow(int chunk_index,String kmer){
         int[] indexes = Utils.generateHashes(kmer,Metadata.getNumHashs(),Metadata.getBloomfilterSize());//对应的k个哈希值，即行索引
         List<String> result_sampels=new ArrayList<>();
         List<Integer> dataset_index_list=Metadata.getChunkFileList().get(chunk_index);
         int num_cols=dataset_index_list.size();
-
 
         BitSet result=new BitSet(num_cols);
         result.set(0,num_cols);//都设置为1
@@ -165,26 +229,6 @@ public class QueryAsrow {
                 }
                 long value = storage_row[(int) i] & mask;
 
-//                System.out.println("布隆过滤器矩阵中存储内容:");
-//                for (int j = 63; j >= 0; j--) {
-//                    long bitValue = (storage_row[(int) i] >> j) & 1;
-//                    System.out.print(bitValue);
-//                }
-//                System.out.println();
-
-//                System.out.println("mask: " + mask + ":");
-//                for (int j = 63; j >= 0; j--) {
-//                    long bitValue = (mask >> j) & 1;
-//                    System.out.print(bitValue);
-//                }
-//                System.out.println();
-
-//                System.out.println("按位与后结果:");
-//                for (int j = 63; j >= 0; j--) {
-//                    long bitValue = (value >> j) & 1;
-//                    System.out.print(bitValue);
-//                }
-//                System.out.println();
 
                 // 将value中的bit写入tempbitset中
                 for (long j = start_bit; j <= end_bit; j++) {
@@ -194,28 +238,8 @@ public class QueryAsrow {
                 }
             }
 
-//            System.out.println(index+"行"+"结果:");
-//            System.out.println("100"+tempbitset.get(100));
-//            for(int i=0;i<num_cols;i++){
-//                if (tempbitset.get(i)){
-//                    System.out.print(1);
-//                }else{
-//                    System.out.print(0);
-//                }
-//            }
-//            System.out.println();
-
             result.and(tempbitset);
-
-//            System.out.println("result结果");
-//            for(int i=0;i<num_cols;i++){
-//                if (result.get(i)){
-//                    System.out.print(1);
-//                }else{
-//                    System.out.print(0);
-//                }
-//            }
-//            System.out.println();
+            tempbitset.clear();
 
         }
 
@@ -226,70 +250,9 @@ public class QueryAsrow {
             }
         }
 
-//        System.out.println("最终结果：");
-//        for(int i=0;i<num_cols;i++){
-//            if (result.get(i)){
-//                System.out.print(1);
-//            }else{
-//                System.out.print(0);
-//            }
-//        }
-//        for(int i=0;i<num_cols;i++){
-//            if (result.get(i)){
-//                System.out.println(Metadata.getSampleByIndex(dataset_index_list.get(i)));
-//            }
-//        }
-//        System.out.println();
-
         return result_sampels;
     }
-    public static List<String> chunk_querySequenceASRow(int chunk_index, String sequence) throws IOException {//查找长序列，每个kmer都存在才报告序列存在
-        int kmersize=31;//根据数据集kmer长度简单写死
-        List<String> kmerList=new ArrayList<>();
-        // 切割sequence并将长度为kmersize的子字符串加入kmerList
-        for (int i = 0; i <= sequence.length() - kmersize; i++) {
-            String kmer = sequence.substring(i, i + kmersize);
-            kmerList.add(kmer);
-        }
 
-        List<String> sub_result=new ArrayList<>(chunk_querykmerASRow(chunk_index,kmerList.get(0)));
-        for(String kmer:kmerList){
-            sub_result.retainAll(chunk_querykmerASRow(chunk_index,kmer));
-        }
 
-        // 将查询结果写入到结果文件
-        if (!sub_result.isEmpty()){
-            return sub_result;
-        }else {
-            return  new ArrayList<>();
-        }
-
-    }
-    public static List<List<String>> chunk_queryFileASRow(int chunk_index, String filePath){//一个文件中有多个查询长序列，查询每一个并把查询结果写入输出文件
-        List<List<String>> sub_results=new ArrayList<>();
-        try(BufferedReader reader=new BufferedReader(new FileReader(filePath))){
-            String line;
-            String sequence="";
-            while ((line=reader.readLine())!=null){
-                if(line.startsWith(">")){
-                    //查询
-                    if (!sequence.isEmpty()){
-                        sub_results.add(chunk_querySequenceASRow(chunk_index,sequence));
-                    }
-                    sequence="";
-                }else {
-                    sequence+=line.trim().toUpperCase();
-                }
-            }
-            if(!sequence.isEmpty()){
-                //查询最后一段序列
-                sub_results.add(chunk_querySequenceASRow(chunk_index,sequence));
-            }
-        }catch (IOException e){
-            System.err.println(e);
-        }
-//        System.out.println("子索引"+chunk_index+"结果："+sub_results);
-        return sub_results;
-    }
 
 }
